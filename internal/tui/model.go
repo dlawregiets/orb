@@ -45,11 +45,11 @@ func fetchModels(client *openrouter.OpenRouter) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		res, err := client.Models.List(ctx, nil, nil, nil)
+		res, err := client.Models.List(ctx, nil)
 		if err != nil {
 			return errMsg{err}
 		}
-		return modelsLoadedMsg{models: res.Data}
+		return modelsLoadedMsg{models: res.GetResult().Data}
 	}
 }
 
