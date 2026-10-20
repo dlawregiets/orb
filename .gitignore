@@ -1,2 +1,35 @@
-build
+# Build output
+/build/
+/dist/
+/orb
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.prof
+*.out
+coverage.*
+*.coverprofile
+
+# Local environment and secrets
+/env
+.env
+.env.*
+!.env.example
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Editor and IDE
+.idea/
+.vscode/
 *.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db

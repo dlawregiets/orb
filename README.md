@@ -100,3 +100,8 @@ Orb sets `env: ["OPENROUTER_API_KEY"]` on the curated provider because
 `canonical` inherits the catalog but not credential lookup. If you authenticate
 through a saved `/connect` account rather than the environment variable, the
 curated provider may need its own connection.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
+
