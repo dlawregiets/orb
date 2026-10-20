@@ -3,6 +3,17 @@
 A terminal UI for browsing OpenRouter's model catalog and curating the models
 that OpenCode may use through OpenRouter.
 
+## Build and install
+
+```sh
+make            # build ./build/orb
+make install    # install into $GOBIN, or $GOPATH/bin
+make install BINDIR=/usr/local/bin
+```
+
+`make test`, `make lint`, `make vet`, and `make clean` cover the rest of the
+usual workflow.
+
 ## Usage
 
 ```sh
