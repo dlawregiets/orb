@@ -1,0 +1,25 @@
+version: "2"
+run:
+  timeout: 2m
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*os.File).Close
+  exclusions:
+    paths:
+      - third_party
+      - generated
+formatters:
+  enable:
+    - gofmt
+    - goimports
