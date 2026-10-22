@@ -51,11 +51,23 @@ In the routing view, `space` includes or excludes an upstream provider,
 slug manually. Manual entry is useful for OpenRouter aliases, which do not
 expose an endpoint list.
 
+Sort the provider rows with `n` (name), `t` (p50 throughput), `c` (effective
+output cost), or `v` (`Value` score). Press the same key again to reverse the
+direction, and `u` to return to routing order. The active column header shows
+`↑` or `↓`.
+
 Providers are shown with their p50 time to first token (`TTFT`), p50 output
-throughput (`t/s`), and 30-minute uptime (`Up 30m`). The line below the table
-adds the 5-minute and 1-day uptime plus p90 latency and throughput for the
-selected provider. Providers with several endpoints are averaged, and
-latency/throughput only appear when `OPENROUTER_API_KEY` is set.
+throughput (`t/s`), and 30-minute uptime (`Up 30m`). The `Value` column blends
+throughput with effective output price (after OpenRouter's endpoint discount)
+to make fast, cheap providers stand out: green is the best combination on the
+page and red the worst. The `t/s` and `Comp/M` cells use the same heat scale,
+so they show which half of the tradeoff each provider wins.
+
+The line below the table adds the 5-minute and 1-day uptime plus p90 latency
+and throughput for the selected provider. Providers with several endpoints are
+averaged, and latency/throughput only appear when `OPENROUTER_API_KEY` is set.
+Without a key there is no speed ranking, so `Value` shows a dash and only the
+`Comp/M` cell is colored.
 
 ## How the OpenCode config is managed
 

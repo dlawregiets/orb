@@ -114,6 +114,194 @@ func TestRoutingRowFormatsStats(t *testing.T) {
 	}
 }
 
+func TestRoutingProviderEffectivePricing(t *testing.T) {
+	discount := 0.5
+	provider := routingProvider{
+		Priced:     true,
+		Prompt:     0.000002,
+		Completion: 0.000004,
+		Discount:   &discount,
+	}
+	if got := provider.effectivePrompt(); got != 0.000001 {
+		t.Fatalf("unexpected effective prompt price: %v", got)
+	}
+	if got := provider.effectiveCompletion(); got != 0.000002 {
+		t.Fatalf("unexpected effective completion price: %v", got)
+	}
+	if got := routingRow(provider, "1")[7]; got != "$2.000" {
+		t.Fatalf("expected discounted completion price, got %q", got)
+	}
+
+	free := routingProvider{Priced: true}
+	if got := routingRow(free, "1")[7]; got != "Free" {
+		t.Fatalf("expected a known zero price to render as Free, got %q", got)
+	}
+	if got := routingRow(routingProvider{}, "1")[7]; got != "-" {
+		t.Fatalf("expected unknown pricing to render as -, got %q", got)
+	}
+}
+
+func TestRoutingHeatmapRanksSpeedAndCost(t *testing.T) {
+	m, _ := testModel(t)
+	m.routing.providers = []routingProvider{
+		{Slug: "fast-cheap", Priced: true, Completion: 0.000001, Throughput: &components.PercentileStats{P50: 120}},
+		{Slug: "fast-pricey", Priced: true, Completion: 0.000010, Throughput: &components.PercentileStats{P50: 100}},
+		{Slug: "slow-cheap", Priced: true, Completion: 0.000002, Throughput: &components.PercentileStats{P50: 20}},
+		{Slug: "slow-pricey", Priced: true, Completion: 0.000020, Throughput: &components.PercentileStats{P50: 10}},
+		{Slug: "manual"},
+	}
+
+	heat := m.routingHeatmap()
+	for _, slug := range []string{"fast-cheap", "fast-pricey", "slow-cheap", "slow-pricey"} {
+		if !heat[slug].HasValue {
+			t.Fatalf("%s should have a combined value score", slug)
+		}
+	}
+	if got := heat["fast-cheap"].Value; got != 1 {
+		t.Fatalf("fast-cheap should rank first: %#v", heat["fast-cheap"])
+	}
+	if got := heat["slow-pricey"].Value; got != 0 {
+		t.Fatalf("slow-pricey should rank last: %#v", heat["slow-pricey"])
+	}
+	if got := heat["fast-pricey"].Value; got < 0.49 || got > 0.51 {
+		t.Fatalf("fast but expensive should score about 0.5: %#v", heat["fast-pricey"])
+	}
+
+	missing := m.routingHeatmap()["manual"]
+	if missing.HasValue {
+		t.Fatalf("providers without data should not get a value score: %#v", missing)
+	}
+}
+
+func TestRoutingSortModes(t *testing.T) {
+	m, _ := testModel(t)
+	m.routing.initialized = true
+	m.routing.table = newRoutingTable()
+	m.routing.providers = []routingProvider{
+		{Slug: "charlie", Priced: true, Completion: 0.000002, Throughput: &components.PercentileStats{P50: 50}},
+		{Slug: "alpha", Priced: true, Completion: 0.000004, Throughput: &components.PercentileStats{P50: 20}},
+		{Slug: "bravo", Priced: true, Completion: 0.000001, Throughput: &components.PercentileStats{P50: 100}},
+		{Slug: "manual"},
+	}
+	m.refreshRoutingRows()
+	assertRoutingSlugs(t, m, "charlie", "alpha", "bravo", "manual")
+
+	m.setRoutingSort(routingSortName)
+	assertRoutingSlugs(t, m, "alpha", "bravo", "charlie", "manual")
+	if got := m.routingSortLabel(); got != "name↑" {
+		t.Fatalf("unexpected sort label: %q", got)
+	}
+	m.setRoutingSort(routingSortName)
+	assertRoutingSlugs(t, m, "manual", "charlie", "bravo", "alpha")
+	if got := m.routingSortLabel(); got != "name↓" {
+		t.Fatalf("unexpected sort label: %q", got)
+	}
+
+	m.setRoutingSort(routingSortThroughput)
+	assertRoutingSlugs(t, m, "bravo", "charlie", "alpha", "manual")
+	if got := m.routingSortLabel(); got != "t/s↓" {
+		t.Fatalf("unexpected sort label: %q", got)
+	}
+	m.setRoutingSort(routingSortThroughput)
+	assertRoutingSlugs(t, m, "alpha", "charlie", "bravo", "manual")
+
+	m.setRoutingSort(routingSortCost)
+	assertRoutingSlugs(t, m, "bravo", "charlie", "alpha", "manual")
+	if got := m.routingSortLabel(); got != "cost↑" {
+		t.Fatalf("unexpected sort label: %q", got)
+	}
+	m.setRoutingSort(routingSortCost)
+	assertRoutingSlugs(t, m, "alpha", "charlie", "bravo", "manual")
+
+	m.setRoutingSort(routingSortValue)
+	assertRoutingSlugs(t, m, "bravo", "charlie", "alpha", "manual")
+	if got := m.routingSortLabel(); got != "value↓" {
+		t.Fatalf("unexpected sort label: %q", got)
+	}
+	m.setRoutingSort(routingSortValue)
+	assertRoutingSlugs(t, m, "alpha", "charlie", "bravo", "manual")
+
+	m.clearRoutingSort()
+	assertRoutingSlugs(t, m, "charlie", "alpha", "bravo", "manual")
+	if got := m.routingSortLabel(); got != "order" {
+		t.Fatalf("unexpected sort label after clearing: %q", got)
+	}
+}
+
+func TestRoutingSortKeys(t *testing.T) {
+	m, _ := testModel(t)
+	m.routing.initialized = true
+	m.routing.table = newRoutingTable()
+	m.routing.providers = []routingProvider{
+		{Slug: "alpha", Priced: true, Completion: 0.000001, Throughput: &components.PercentileStats{P50: 10}},
+		{Slug: "bravo", Priced: true, Completion: 0.000002, Throughput: &components.PercentileStats{P50: 20}},
+	}
+	m.refreshRoutingRows()
+
+	m.updateRouting(key('n'))
+	if m.routing.sortBy != routingSortName || m.routing.sortDesc {
+		t.Fatalf("n should sort by name ascending: %#v", m.routing)
+	}
+	m.updateRouting(key('t'))
+	if m.routing.sortBy != routingSortThroughput || !m.routing.sortDesc {
+		t.Fatalf("t should sort by t/s descending: %#v", m.routing)
+	}
+	m.updateRouting(key('c'))
+	if m.routing.sortBy != routingSortCost || m.routing.sortDesc {
+		t.Fatalf("c should sort by cost ascending: %#v", m.routing)
+	}
+	m.updateRouting(key('v'))
+	if m.routing.sortBy != routingSortValue || !m.routing.sortDesc {
+		t.Fatalf("v should sort by value descending: %#v", m.routing)
+	}
+	m.updateRouting(key('u'))
+	if m.routing.sortBy != routingSortOrder {
+		t.Fatalf("u should return to routing order: %#v", m.routing)
+	}
+}
+
+func TestRoutingSortRequiresMetricData(t *testing.T) {
+	m, _ := testModel(t)
+	m.routing.initialized = true
+	m.routing.table = newRoutingTable()
+	m.routing.providers = []routingProvider{
+		{Slug: "alpha", Priced: true, Completion: 0.000001},
+		{Slug: "bravo", Priced: true, Completion: 0.000002},
+	}
+	m.refreshRoutingRows()
+
+	m.setRoutingSort(routingSortThroughput)
+	if m.routing.sortBy != routingSortOrder || !m.statusIsError {
+		t.Fatalf("t/s sorting without throughput data should be refused: %#v", m.routing)
+	}
+
+	m.setRoutingSort(routingSortValue)
+	if m.routing.sortBy != routingSortOrder || !m.statusIsError {
+		t.Fatalf("value sorting without throughput data should be refused: %#v", m.routing)
+	}
+
+	// Cost is available, so it should still sort.
+	m.setRoutingSort(routingSortCost)
+	if m.routing.sortBy != routingSortCost || m.statusIsError {
+		t.Fatalf("cost sorting should work with pricing data: %#v", m.routing)
+	}
+}
+
+func assertRoutingSlugs(t *testing.T, m *Model, want ...string) {
+	t.Helper()
+	rows := m.routing.table.Rows()
+	got := make([]string, len(rows))
+	for i := range rows {
+		if len(rows[i]) < 2 {
+			t.Fatalf("row %d is missing a provider slug: %v", i, rows[i])
+		}
+		got[i] = rows[i][1]
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected provider order: got %v, want %v", got, want)
+	}
+}
+
 func TestRoutingSelectionDetailShowsPercentiles(t *testing.T) {
 	m, _ := testModel(t)
 	m.authenticated = true
@@ -142,8 +330,10 @@ func TestRoutingSelectionDetailShowsPercentiles(t *testing.T) {
 	}
 
 	view := m.View()
-	if !strings.Contains(view, "Up 30m") || !strings.Contains(view, "TTFT") || !strings.Contains(view, "t/s") {
-		t.Fatalf("routing view is missing performance columns:\n%s", view)
+	for _, want := range []string{"Up 30m", "TTFT", "t/s", "Value"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("routing view is missing %q:\n%s", want, view)
+		}
 	}
 }
 
