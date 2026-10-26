@@ -278,6 +278,136 @@ func TestSecondSaveIsNoop(t *testing.T) {
 	}
 }
 
+func TestAgentAssignmentPersists(t *testing.T) {
+	path := writeConfig(t, `{
+  "$schema": "https://opencode.ai/config.json",
+  "agents": {
+    "reviewer": {"temperature": 0.2}
+  }
+}`)
+
+	cfg := load(t, path)
+	id := "~deepseek/deepseek-flash-latest"
+	cfg.SetAgentModel("reviewer", id)
+
+	if !cfg.Allowed(id) {
+		t.Fatal("assigning a model to an agent should allow it")
+	}
+	if !cfg.AgentUsesModel("reviewer", id) {
+		t.Fatal("agent is not using the assigned model")
+	}
+	if got, ok := cfg.AgentModel("reviewer"); !ok || got != CuratedProvider+"/"+id {
+		t.Fatalf("unexpected agent model: %q, %v", got, ok)
+	}
+	if got := cfg.AgentsUsing(id); len(got) != 1 || got[0] != "reviewer" {
+		t.Fatalf("unexpected agents using the model: %v", got)
+	}
+
+	cfg.SetAgentModel("planner", id)
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	cfg = load(t, path)
+	if !cfg.AgentUsesModel("reviewer", id) || !cfg.AgentUsesModel("planner", id) {
+		t.Fatalf("agent assignments were not saved: %v", cfg.Agents())
+	}
+
+	raw := readRaw(t, path)
+	agents := raw["agents"].(map[string]any)
+	reviewer := agents["reviewer"].(map[string]any)
+	if reviewer["temperature"] != 0.2 {
+		t.Fatalf("unrelated agent settings were lost: %v", reviewer)
+	}
+	planner := agents["planner"].(map[string]any)
+	if planner["model"] != CuratedProvider+"/"+id {
+		t.Fatalf("unexpected planner model: %v", planner)
+	}
+
+	cfg.ClearAgentModel("reviewer")
+	cfg.ClearAgentModel("planner")
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if _, ok := cfg.AgentModel("reviewer"); ok {
+		t.Fatal("reviewer model was not cleared")
+	}
+	if _, ok := cfg.AgentModel("planner"); ok {
+		t.Fatal("planner model was not cleared")
+	}
+
+	cfg = load(t, path)
+	if got := cfg.Agents(); len(got) != 1 || got[0] != "reviewer" {
+		t.Fatalf("unexpected agents after clearing: %v", got)
+	}
+	if out := read(t, path); strings.Contains(out, `"planner"`) {
+		t.Fatalf("empty agent was left in the file:\n%s", out)
+	}
+}
+
+func TestAgentAssignmentCreatesSection(t *testing.T) {
+	path := writeConfig(t, `{"$schema": "https://opencode.ai/config.json"}`)
+	cfg := load(t, path)
+	id := "~deepseek/deepseek-flash-latest"
+
+	cfg.SetAgentModel("reviewer", id)
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	cfg = load(t, path)
+	if !cfg.AgentUsesModel("reviewer", id) {
+		t.Fatalf("agent assignment was not created: %v", cfg.Agents())
+	}
+	raw := readRaw(t, path)
+	agents := raw["agents"].(map[string]any)
+	reviewer := agents["reviewer"].(map[string]any)
+	if reviewer["model"] != CuratedProvider+"/"+id {
+		t.Fatalf("unexpected agent model: %v", reviewer)
+	}
+}
+
+func TestAgentRawReferenceIsRewritten(t *testing.T) {
+	path := writeConfig(t, `{
+  "$schema": "https://opencode.ai/config.json",
+  "agents": {
+    "reviewer": {"model": "openrouter/~deepseek/deepseek-flash-latest#high"}
+  }
+}`)
+
+	cfg := load(t, path)
+	id := "~deepseek/deepseek-flash-latest"
+	if !cfg.AgentUsesModel("reviewer", id) {
+		t.Fatal("an agent using the raw provider should count as using the model")
+	}
+	cfg.SetAllowed(id, true)
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw := readRaw(t, path)
+	reviewer := raw["agents"].(map[string]any)["reviewer"].(map[string]any)
+	if got := reviewer["model"]; got != CuratedProvider+"/"+id+"#high" {
+		t.Fatalf("agent model was not rewritten: %v", got)
+	}
+}
+
+func readRaw(t *testing.T, path string) map[string]any {
+	t.Helper()
+	doc, err := hujson.Parse([]byte(read(t, path)))
+	if err != nil {
+		t.Fatalf("saved config is invalid HuJSON: %v", err)
+	}
+	doc.Standardize()
+	var raw map[string]any
+	if err := json.Unmarshal(doc.Pack(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func hasPolicy(policies []any, resource, effect string) bool {
 	for _, value := range policies {
 		statement, ok := value.(map[string]any)

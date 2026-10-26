@@ -41,10 +41,18 @@ requests; uptime and pricing work without a key.
 | `y` | Knowledge cutoff filter |
 | `enter` | Open model details |
 | `space` | Allow or remove a model |
+| `a` | Assign the model to an agent |
 | `p` | Edit upstream provider routing |
 | `s` | Save the OpenCode config |
 | `r` | Refresh the OpenRouter catalog |
 | `q` / `esc` | Back or quit |
+
+Press `a` from a model to open the agent assignment view. It lists the agents
+defined in the OpenCode config. `space` points the selected agent's `model` at
+the current model, or removes that assignment, and `i` adds an agent by name.
+The model must be allowed first. Assignments are written to
+`agents.<name>.model`; other agent settings are left untouched, and an agent
+created only for the assignment is removed again when the model is cleared.
 
 In the routing view, `space` includes or excludes an upstream provider,
 `J`/`K` reorder it, `a` toggles `allow_fallbacks`, and `i` adds a provider
@@ -101,7 +109,9 @@ OpenCode has no model-level allowlist, so orb uses a dedicated provider:
 Orb seeds the allowlist from any existing `providers.openrouter.models`
 entries, copies their request settings, and rewrites `openrouter/...` model
 references in the same file (the default model, agents, and commands) to
-`openrouter-curated/...` when the model is allowed.
+`openrouter-curated/...` when the model is allowed. Agent assignments made in
+the agent view are stored as `agents.<name>.model` references, so they are
+covered by the same rewrite and validation.
 
 The raw `openrouter` provider is denied by policy but left in place so its
 settings are not lost. References in external agent or command files are not

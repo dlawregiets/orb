@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/tailscale/hujson"
@@ -238,6 +239,104 @@ func (c *Config) SetRouting(modelID string, r Routing) {
 		delete(entry, "body")
 	}
 	c.dirty = true
+}
+
+// Agents returns the sorted names of the agents defined in the configuration.
+func (c *Config) Agents() []string {
+	agents, _ := c.raw["agents"].(map[string]any)
+	names := make([]string, 0, len(agents))
+	for name, value := range agents {
+		if _, ok := value.(map[string]any); ok {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// AgentModel returns the full model reference configured for an agent.
+func (c *Config) AgentModel(agent string) (string, bool) {
+	entry, ok := c.agentEntry(agent)
+	if !ok {
+		return "", false
+	}
+	ref, ok := parseModelRef(entry["model"])
+	if !ok {
+		return "", false
+	}
+	value, _ := ref.value().(string)
+	return value, true
+}
+
+// AgentUsesModel reports whether an agent is configured to use modelID,
+// referenced through either the raw or the curated provider.
+func (c *Config) AgentUsesModel(agent, modelID string) bool {
+	entry, ok := c.agentEntry(agent)
+	if !ok {
+		return false
+	}
+	ref, ok := parseModelRef(entry["model"])
+	if !ok || (ref.Provider != RawProvider && ref.Provider != CuratedProvider) {
+		return false
+	}
+	return ref.Model == modelID
+}
+
+// AgentsUsing returns the sorted names of agents configured to use modelID.
+func (c *Config) AgentsUsing(modelID string) []string {
+	var names []string
+	for _, name := range c.Agents() {
+		if c.AgentUsesModel(name, modelID) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// SetAgentModel points an agent's model at the curated provider and makes
+// sure the model is allowed. Other agent settings are left untouched.
+func (c *Config) SetAgentModel(agent, modelID string) {
+	agent = strings.TrimSpace(agent)
+	if agent == "" || modelID == "" {
+		return
+	}
+	if !c.Allowed(modelID) {
+		c.SetAllowed(modelID, true)
+	}
+
+	agents := ensureMap(c.raw, "agents")
+	entry := ensureMap(agents, agent)
+	entry["model"] = CuratedProvider + "/" + modelID
+	c.dirty = true
+}
+
+// ClearAgentModel removes an agent's model assignment while keeping its other
+// settings. An agent with no remaining settings is removed entirely.
+func (c *Config) ClearAgentModel(agent string) {
+	agents, _ := c.raw["agents"].(map[string]any)
+	entry, ok := agents[agent].(map[string]any)
+	if !ok {
+		return
+	}
+	if _, ok := entry["model"]; !ok {
+		return
+	}
+
+	delete(entry, "model")
+	if len(entry) == 0 {
+		delete(agents, agent)
+		if len(agents) == 0 {
+			delete(c.raw, "agents")
+		}
+	}
+	c.dirty = true
+}
+
+// agentEntry returns an agent's configuration object.
+func (c *Config) agentEntry(agent string) (map[string]any, bool) {
+	agents, _ := c.raw["agents"].(map[string]any)
+	entry, ok := agents[agent].(map[string]any)
+	return entry, ok
 }
 
 // Save writes the curated provider, the provider policies, and any rewritten
@@ -507,12 +606,30 @@ func (c *Config) buildPatch() ([]byte, error) {
 	}
 
 	for _, section := range []string{"agents", "commands"} {
-		beforeSection, _ := c.original[section].(map[string]any)
-		afterSection, _ := c.raw[section].(map[string]any)
+		beforeSection, hadSection := c.original[section].(map[string]any)
+		afterSection, hasSection := c.raw[section].(map[string]any)
+		switch {
+		case !hadSection && hasSection:
+			// The section is new, so add it whole; JSON Patch cannot add a
+			// nested value when its parent does not exist.
+			add("/"+section, nil, c.raw[section], false)
+			continue
+		case hadSection && !hasSection:
+			operations = append(operations, patchOperation{Op: "remove", Path: "/" + section})
+			continue
+		case !hadSection && !hasSection:
+			continue
+		}
+
 		for name, afterValue := range afterSection {
 			afterEntry, _ := afterValue.(map[string]any)
+			beforeEntry, hadEntry := beforeSection[name].(map[string]any)
+			if !hadEntry {
+				// Add the whole agent or command so its parent exists.
+				add("/"+section+"/"+escapePointer(name), nil, afterValue, false)
+				continue
+			}
 			afterModel, afterHas := afterEntry["model"]
-			beforeEntry, _ := beforeSection[name].(map[string]any)
 			beforeModel, beforeHas := beforeEntry["model"]
 			if afterHas == beforeHas && reflect.DeepEqual(afterModel, beforeModel) {
 				continue
@@ -522,6 +639,11 @@ func (c *Config) buildPatch() ([]byte, error) {
 				add(path, beforeModel, afterModel, beforeHas)
 			} else if beforeHas {
 				operations = append(operations, patchOperation{Op: "remove", Path: path})
+			}
+		}
+		for name := range beforeSection {
+			if _, ok := afterSection[name]; !ok {
+				operations = append(operations, patchOperation{Op: "remove", Path: "/" + section + "/" + escapePointer(name)})
 			}
 		}
 	}

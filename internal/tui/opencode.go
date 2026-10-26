@@ -30,6 +30,8 @@ func (m *Model) currentModelID() string {
 		}
 	case viewRouting:
 		return m.routing.modelID
+	case viewAgents:
+		return m.agents.modelID
 	}
 	row := m.table.SelectedRow()
 	if len(row) == 0 {

@@ -27,6 +27,7 @@ const (
 	viewList view = iota
 	viewDetail
 	viewRouting
+	viewAgents
 )
 
 type modelsLoadedMsg struct {
@@ -84,6 +85,7 @@ type Model struct {
 	ready         bool
 
 	routing routingState
+	agents  agentState
 
 	status        string
 	statusIsError bool
@@ -148,6 +150,7 @@ func New(client *openrouter.OpenRouter, cfg *opencode.Config, authenticated bool
 		table:         t,
 		loading:       true,
 		routing:       routingState{input: ri},
+		agents:        newAgentState(),
 	}
 }
 
@@ -230,6 +233,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateRouting(msg)
 		}
 
+		if m.view == viewAgents {
+			return m.updateAgents(msg)
+		}
+
 		if m.view == viewDetail {
 			switch msg.String() {
 			case "esc", "q", "enter":
@@ -243,6 +250,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.openRouting(id, viewDetail)
 				}
 				return m, nil
+			case "a":
+				if id := m.currentModelID(); id != "" {
+					return m, m.openAgents(id, viewDetail)
+				}
+				return m, nil
 			case "s":
 				return m, saveConfig(m.cfg)
 			}
@@ -250,8 +262,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// While an input is focused it swallows keys; filters re-apply on
-			// every character so the list updates live.
-			if m.cutoffInput.Focused() {
+		// every character so the list updates live.
+		if m.cutoffInput.Focused() {
 			newInput, cmd := m.cutoffInput.Update(msg)
 			m.cutoffInput = newInput
 			if msg.Type == tea.KeyBackspace || msg.Type == tea.KeyDelete || msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
@@ -316,6 +328,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "p":
 			if id := m.currentModelID(); id != "" {
 				return m, m.openRouting(id, viewList)
+			}
+			return m, nil
+
+		case "a":
+			if id := m.currentModelID(); id != "" {
+				return m, m.openAgents(id, viewList)
 			}
 			return m, nil
 
@@ -422,8 +440,8 @@ func (m *Model) applyFilters() {
 		}
 
 		// Cutoff filtering: keep models whose knowledge cutoff is at or
-			// after the entered year. Models without a cutoff are dropped.
-			if cutoffStr != "" {
+		// after the entered year. Models without a cutoff are dropped.
+		if cutoffStr != "" {
 			targetYear, err := strconv.Atoi(cutoffStr)
 			if err == nil && targetYear > 0 {
 				if model.KnowledgeCutoff.IsSet() && !model.KnowledgeCutoff.IsNull() {
@@ -491,6 +509,10 @@ func (m *Model) View() string {
 		return m.routingView()
 	}
 
+	if m.view == viewAgents {
+		return m.agentView()
+	}
+
 	if m.view == viewDetail {
 		return m.detailView()
 	}
@@ -547,7 +569,7 @@ func (m *Model) listView() string {
 	}
 	b.WriteString(helpStyle.Render(countMsg))
 	fmt.Fprint(&b, "\n")
-	b.WriteString(helpStyle.Render(" ↑↓ nav  enter detail  space allow  p routing  s save  q quit  / search  f free  o allowed  m modality  y cutoff  r refresh"))
+	b.WriteString(helpStyle.Render(" ↑↓ nav  enter detail  space allow  a agents  p routing  s save  q quit  / search  f free  o allowed  m modality  y cutoff  r refresh"))
 	if m.status != "" {
 		fmt.Fprint(&b, "\n")
 		if m.statusIsError {
@@ -600,6 +622,12 @@ func (m *Model) detailView() string {
 			fallbacks = "off"
 		}
 		wrapField(&b, "Fallbacks", fallbacks, valWidth)
+	}
+
+	if agents := m.cfg.AgentsUsing(model.ID); len(agents) > 0 {
+		wrapField(&b, "Agents", strings.Join(agents, ", "), valWidth)
+	} else {
+		wrapField(&b, "Agents", "none (a to assign)", valWidth)
 	}
 
 	modality := "unknown"
@@ -670,7 +698,7 @@ func (m *Model) detailView() string {
 		wrapField(&b, "Output Modalities", strings.Join(mods, ", "), valWidth)
 	}
 
-	b.WriteString(helpStyle.Render("\n space allow  p routing  s save  esc/q back"))
+	b.WriteString(helpStyle.Render("\n space allow  a agents  p routing  s save  esc/q back"))
 	if m.status != "" {
 		fmt.Fprint(&b, "\n")
 		if m.statusIsError {
