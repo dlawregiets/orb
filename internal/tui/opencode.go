@@ -9,6 +9,8 @@ import (
 	"orb/internal/opencode"
 )
 
+// saveConfig writes the config to disk and reports the result as a
+// savedMsg, including any warnings about dangling model references.
 func saveConfig(cfg *opencode.Config) tea.Cmd {
 	return func() tea.Msg {
 		if err := cfg.Save(); err != nil {
@@ -18,6 +20,8 @@ func saveConfig(cfg *opencode.Config) tea.Cmd {
 	}
 }
 
+// currentModelID returns the ID of the model the user is currently looking
+// at, whether that is a table row, the detail view or the routing view.
 func (m *Model) currentModelID() string {
 	switch m.view {
 	case viewDetail:
@@ -34,6 +38,9 @@ func (m *Model) currentModelID() string {
 	return row[0]
 }
 
+// toggleSelectedAllowed flips the selected model's membership in the
+// allowlist and refreshes the table. When the allowed-only filter would
+// hide the model being removed, the detail view closes.
 func (m *Model) toggleSelectedAllowed() {
 	id := m.currentModelID()
 	if id == "" {
@@ -57,6 +64,7 @@ func (m *Model) toggleSelectedAllowed() {
 	}
 }
 
+// allowedCell renders the table's On column.
 func (m *Model) allowedCell(id string) string {
 	if m.allowed[id] {
 		return "yes"
@@ -64,6 +72,7 @@ func (m *Model) allowedCell(id string) string {
 	return "-"
 }
 
+// shortenPath replaces the user's home prefix with ~ for display.
 func shortenPath(path string) string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {

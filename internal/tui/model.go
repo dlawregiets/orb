@@ -5,6 +5,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,6 +42,8 @@ type savedMsg struct {
 	warnings []string
 }
 
+// fetchModels returns a tea.Cmd that loads the OpenRouter model catalog as a
+// modelsLoadedMsg, or errMsg on failure.
 func fetchModels(client *openrouter.OpenRouter) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -164,12 +167,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.ready = true
 
+		// Leave room for the header, filters, help and status lines.
 		h := msg.Height - 12
-		if h < 5 {
-			h = 5
-		}
+		h = int(math.Max(float64(h), 5))
 		m.table.SetHeight(h)
 
+		// The model column gets 40% of the width; the remaining width is
+		// split evenly across the five data columns, both with floors so the
+		// table stays readable on narrow terminals.
 		w := msg.Width - 6
 		modelW := w * 4 / 10
 		onW := 4
@@ -219,6 +224,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.handleEndpoints(msg)
 
 	case tea.KeyMsg:
+		// The routing view and the detail view each capture most keys, so
+		// they are handled by dedicated updaters below.
 		if m.view == viewRouting {
 			return m.updateRouting(msg)
 		}
@@ -242,7 +249,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		if m.cutoffInput.Focused() {
+		// While an input is focused it swallows keys; filters re-apply on
+			// every character so the list updates live.
+			if m.cutoffInput.Focused() {
 			newInput, cmd := m.cutoffInput.Update(msg)
 			m.cutoffInput = newInput
 			if msg.Type == tea.KeyBackspace || msg.Type == tea.KeyDelete || msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
@@ -366,6 +375,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// applyFilters recomputes m.filtered from the full model catalog according
+// to the search box, the free/allowed/modality toggles and the knowledge
+// cutoff year, then rebuilds the table rows sorted by context length.
 func (m *Model) applyFilters() {
 	if len(m.models) == 0 {
 		m.filtered = nil
@@ -409,7 +421,9 @@ func (m *Model) applyFilters() {
 			}
 		}
 
-		if cutoffStr != "" {
+		// Cutoff filtering: keep models whose knowledge cutoff is at or
+			// after the entered year. Models without a cutoff are dropped.
+			if cutoffStr != "" {
 			targetYear, err := strconv.Atoi(cutoffStr)
 			if err == nil && targetYear > 0 {
 				if model.KnowledgeCutoff.IsSet() && !model.KnowledgeCutoff.IsNull() {
@@ -484,6 +498,7 @@ func (m *Model) View() string {
 	return m.listView()
 }
 
+// listView renders the filter row and the main model table.
 func (m *Model) listView() string {
 	var b strings.Builder
 
@@ -545,6 +560,8 @@ func (m *Model) listView() string {
 	return b.String()
 }
 
+// detailView renders the selected model's metadata. It falls back to the
+// list view when the selection is no longer valid (e.g. after refiltering).
 func (m *Model) detailView() string {
 	if m.selectedIdx >= len(m.filtered) {
 		m.view = viewList
@@ -666,6 +683,7 @@ func (m *Model) detailView() string {
 	return detailStyle.Render(b.String())
 }
 
+// checkbox renders a "[x] Label  [key]" toggle for the filter row.
 func checkbox(label string, checked bool, key string) string {
 	if checked {
 		return fmt.Sprintf("[x] %s  [%s]", label, keyStyle.Render(key))
@@ -673,6 +691,8 @@ func checkbox(label string, checked bool, key string) string {
 	return fmt.Sprintf("[ ] %s  [%s]", label, keyStyle.Render(key))
 }
 
+// wrapField writes one "Label: value" line, wrapping long values onto
+// continuation lines aligned under the label.
 func wrapField(b *strings.Builder, label, value string, maxWidth int) {
 	if len(value) <= maxWidth {
 		fmt.Fprintf(b, " %s  %s\n", headerStyle.Render(label+":"), value)
@@ -689,6 +709,8 @@ func wrapField(b *strings.Builder, label, value string, maxWidth int) {
 	}
 }
 
+// parsePrice parses OpenRouter's per-token price string; unparseable or
+// empty prices count as free.
 func parsePrice(s string) float64 {
 	if s == "" {
 		return 0
@@ -700,6 +722,8 @@ func parsePrice(s string) float64 {
 	return f
 }
 
+// formatPrice converts a per-token price to per-million display with
+// enough precision for cheap models, or "Free" for zero.
 func formatPrice(price float64) string {
 	perM := price * 1_000_000
 	switch {
@@ -714,6 +738,7 @@ func formatPrice(price float64) string {
 	}
 }
 
+// formatContext abbreviates a context length as N, NK or N.NM.
 func formatContext(ctx *int64) string {
 	if ctx == nil {
 		return "?"
@@ -728,6 +753,8 @@ func formatContext(ctx *int64) string {
 	}
 }
 
+// safeContext dereferences an optional context length, treating nil as 0
+// so models without one sort last.
 func safeContext(ctx *int64) int64 {
 	if ctx == nil {
 		return 0
@@ -735,6 +762,7 @@ func safeContext(ctx *int64) int64 {
 	return *ctx
 }
 
+// safeStr dereferences an optional string, treating nil as empty.
 func safeStr(s *string) string {
 	if s == nil {
 		return ""
@@ -742,6 +770,8 @@ func safeStr(s *string) string {
 	return *s
 }
 
+// extractProvider returns the slug before the "/" in a model ID, or the
+// whole ID when there is no slash.
 func extractProvider(id string) string {
 	parts := strings.SplitN(id, "/", 2)
 	if len(parts) < 2 {
@@ -750,6 +780,8 @@ func extractProvider(id string) string {
 	return parts[0]
 }
 
+// wrapText wraps text at word boundaries so no line exceeds maxLen
+// characters. Overlong words are not broken.
 func wrapText(text string, maxLen int) string {
 	if len(text) <= maxLen {
 		return text
@@ -773,6 +805,7 @@ func wrapText(text string, maxLen int) string {
 	return b.String()
 }
 
+// formatUnix renders a timestamp as a plain date.
 func formatUnix(ts int64) string {
 	return time.Unix(ts, 0).Format("2006-01-02")
 }

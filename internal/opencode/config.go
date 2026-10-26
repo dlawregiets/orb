@@ -30,6 +30,7 @@ const (
 	// SchemaURL is included in newly created configuration files.
 	SchemaURL = "https://opencode.ai/config.json"
 
+	// providerPolicy is the policy action that grants or denies a provider.
 	providerPolicy = "provider.use"
 )
 
@@ -66,6 +67,8 @@ type Config struct {
 	dirty bool
 }
 
+// ResolvePath returns the OpenCode configuration file to edit. An explicit
+// path wins; otherwise the global opencode.json (or opencode.jsonc) is used.
 // ResolvePath returns the OpenCode configuration file to edit. An explicit
 // path wins; otherwise the global opencode.json (or opencode.jsonc) is used.
 func ResolvePath(explicit string) (string, error) {
@@ -335,6 +338,9 @@ func (c *Config) Warnings() []string {
 	return warnings
 }
 
+// entry returns the model's stored entry, preferring the curated list and
+// falling back to entries removed this session or left on the raw provider,
+// so re-allowing a model restores its previous settings.
 func (c *Config) entry(modelID string) map[string]any {
 	if entry, ok := c.models[modelID].(map[string]any); ok {
 		return entry
@@ -348,6 +354,8 @@ func (c *Config) entry(modelID string) map[string]any {
 	return map[string]any{}
 }
 
+// seedModels initializes the curated model map at load time, either from an
+// existing curated provider or by migrating overrides from the raw one.
 func (c *Config) seedModels() map[string]any {
 	providers, _ := c.raw["providers"].(map[string]any)
 
@@ -360,6 +368,8 @@ func (c *Config) seedModels() map[string]any {
 	return allowedEntries(c.rawModels)
 }
 
+// ensureCuratedProvider creates the curated provider if missing, copying
+// non-model settings from the raw provider, and syncs the model map into it.
 func (c *Config) ensureCuratedProvider() {
 	providers := ensureMap(c.raw, "providers")
 
@@ -385,6 +395,9 @@ func (c *Config) ensureCuratedProvider() {
 	provider["models"] = c.models
 }
 
+// ensurePolicies adds (or refreshes) the deny/allow policy pair that hides
+// the raw provider and exposes the curated one, leaving other policies in
+// their original relative order.
 func (c *Config) ensurePolicies(denyProvider, allowProvider string) {
 	existing, _ := c.raw["policies"].([]any)
 	policies := make([]any, 0, len(existing)+2)
@@ -405,6 +418,8 @@ func (c *Config) ensurePolicies(denyProvider, allowProvider string) {
 	c.raw["policies"] = policies
 }
 
+// rewriteModelReferences repoints "openrouter/<model>" references for
+// allowed models at the curated provider so existing settings keep working.
 func (c *Config) rewriteModelReferences() {
 	rewrite := func(value any) any {
 		ref, ok := parseModelRef(value)
@@ -432,12 +447,17 @@ func (c *Config) rewriteModelReferences() {
 	}
 }
 
+// patchOperation is one RFC 6902 JSON Patch operation used to update the
+// HuJSON document in place.
 type patchOperation struct {
 	Op    string `json:"op"`
 	Path  string `json:"path"`
 	Value any    `json:"value,omitempty"`
 }
 
+// buildPatch serializes the differences between original and current state
+// into a JSON Patch covering the schema, providers, policies and model
+// references.
 func (c *Config) buildPatch() ([]byte, error) {
 	var operations []patchOperation
 	add := func(path string, before, after any, hadBefore bool) {
@@ -512,17 +532,21 @@ func (c *Config) buildPatch() ([]byte, error) {
 	return json.Marshal(operations)
 }
 
+// escapePointer encodes a key as a JSON Pointer token (RFC 6901).
 func escapePointer(value string) string {
 	value = strings.ReplaceAll(value, "~", "~0")
 	return strings.ReplaceAll(value, "/", "~1")
 }
 
+// modelRef is a parsed OpenCode model reference such as
+// "provider/model" or "provider/model#variant".
 type modelRef struct {
 	Provider string
 	Model    string
 	Variant  string
 }
 
+// value renders the reference back into OpenCode's string form.
 func (r modelRef) value() any {
 	if r.Variant == "" {
 		return r.Provider + "/" + r.Model
@@ -530,6 +554,8 @@ func (r modelRef) value() any {
 	return r.Provider + "/" + r.Model + "#" + r.Variant
 }
 
+// parseModelRef extracts a model reference from either the string form or
+// OpenCode's {providerID, model, variant} object form.
 func parseModelRef(value any) (modelRef, bool) {
 	switch v := value.(type) {
 	case string:
@@ -552,6 +578,8 @@ func parseModelRef(value any) (modelRef, bool) {
 	}
 }
 
+// rawModelMap returns the model overrides attached to the built-in
+// OpenRouter provider, if any.
 func rawModelMap(raw map[string]any) map[string]any {
 	providers, _ := raw["providers"].(map[string]any)
 	provider, _ := providers[RawProvider].(map[string]any)
@@ -559,6 +587,8 @@ func rawModelMap(raw map[string]any) map[string]any {
 	return models
 }
 
+// allowedEntries copies a model map, dropping entries explicitly disabled
+// with "disabled": true.
 func allowedEntries(models map[string]any) map[string]any {
 	out := make(map[string]any, len(models))
 	for id, value := range models {
@@ -574,6 +604,8 @@ func allowedEntries(models map[string]any) map[string]any {
 	return out
 }
 
+// ensureMap returns the object stored at key, creating an empty one if the
+// key is missing or holds something else.
 func ensureMap(parent map[string]any, key string) map[string]any {
 	if value, ok := parent[key].(map[string]any); ok {
 		return value
@@ -583,6 +615,8 @@ func ensureMap(parent map[string]any, key string) map[string]any {
 	return value
 }
 
+// deepCopy clones a JSON-shaped value via a marshal/unmarshal round trip,
+// so edits to the copy never alias the original document.
 func deepCopy(value any) any {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -595,6 +629,8 @@ func deepCopy(value any) any {
 	return out
 }
 
+// marshalIndent encodes as two-space indented JSON without HTML escaping,
+// so model IDs containing & or < survive intact.
 func marshalIndent(value any) ([]byte, error) {
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)
@@ -606,6 +642,8 @@ func marshalIndent(value any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// writeFileAtomic writes data to path via a temp file and rename, so a
+// crash mid-write can never leave a truncated config behind.
 func writeFileAtomic(path string, data []byte, mode fs.FileMode) error {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved

@@ -40,6 +40,8 @@ type routingProvider struct {
 	Throughput *components.PercentileStats
 }
 
+// routingState holds the transient state of the routing editor for the
+// model currently being configured.
 type routingState struct {
 	modelID     string
 	returnView  view
@@ -56,6 +58,7 @@ type routingState struct {
 	initialized bool
 }
 
+// routingSortKey selects the column the provider table is sorted by.
 type routingSortKey int
 
 const (
@@ -66,6 +69,7 @@ const (
 	routingSortValue
 )
 
+// routingColumn is one column of the routing table.
 type routingColumn struct {
 	Title string
 	Width int
@@ -107,12 +111,16 @@ type routingEntry struct {
 	order    int
 }
 
+// endpointsLoadedMsg carries the fetched provider list for a model, or the
+// error that prevented it.
 type endpointsLoadedMsg struct {
 	modelID   string
 	providers []routingProvider
 	err       error
 }
 
+// fetchEndpoints loads the model's public endpoints and returns them
+// grouped by provider as an endpointsLoadedMsg.
 func fetchEndpoints(client *openrouter.OpenRouter, modelID string) tea.Cmd {
 	return func() tea.Msg {
 		author, slug, ok := strings.Cut(modelID, "/")
@@ -136,6 +144,8 @@ func fetchEndpoints(client *openrouter.OpenRouter, modelID string) tea.Cmd {
 	}
 }
 
+// providerAccumulator sums endpoint statistics so they can be averaged
+// into a single routingProvider per upstream slug.
 type providerAccumulator struct {
 	provider   routingProvider
 	latency    components.PercentileStats
@@ -225,6 +235,7 @@ func providersFromEndpoints(endpoints []components.PublicEndpoint) []routingProv
 	return out
 }
 
+// averageValue returns total/count, or nil when nothing contributed.
 func averageValue(total float64, count int) *float64 {
 	if count == 0 {
 		return nil
@@ -233,6 +244,8 @@ func averageValue(total float64, count int) *float64 {
 	return &value
 }
 
+// averagePercentiles averages each percentile separately, returning nil
+// when nothing contributed.
 func averagePercentiles(total components.PercentileStats, count int) *components.PercentileStats {
 	if count == 0 {
 		return nil
@@ -246,6 +259,8 @@ func averagePercentiles(total components.PercentileStats, count int) *components
 	return &stats
 }
 
+// openRouting enters the routing view for a model, preserving any sort
+// choice across visits, and kicks off the endpoint fetch.
 func (m *Model) openRouting(modelID string, returnView view) tea.Cmd {
 	if !m.cfg.Allowed(modelID) {
 		m.status = "Allow " + modelID + " first with space"
@@ -277,12 +292,15 @@ func (m *Model) openRouting(modelID string, returnView view) tea.Cmd {
 	return fetchEndpoints(m.client, modelID)
 }
 
+// newRoutingTable builds the routing table with its default column widths.
 func newRoutingTable() routingTable {
 	t := routingTable{height: 8}
 	t.SetColumns(routingColumns(22))
 	return t
 }
 
+// routingColumns lays out the routing table; providerWidth scales with the
+// terminal width.
 func routingColumns(providerWidth int) []routingColumn {
 	return []routingColumn{
 		{Title: "Order", Width: 5},
@@ -298,14 +316,17 @@ func routingColumns(providerWidth int) []routingColumn {
 	}
 }
 
+// SetColumns replaces the column layout.
 func (t *routingTable) SetColumns(columns []routingColumn) {
 	t.columns = columns
 }
 
+// Columns returns the current column layout.
 func (t *routingTable) Columns() []routingColumn {
 	return t.columns
 }
 
+// SetRows replaces the rows, clamping the cursor to the new range.
 func (t *routingTable) SetRows(rows [][]string) {
 	t.rows = rows
 	if t.cursor > len(rows)-1 {
@@ -313,6 +334,7 @@ func (t *routingTable) SetRows(rows [][]string) {
 	}
 }
 
+// Rows returns the current rows.
 func (t *routingTable) Rows() [][]string {
 	return t.rows
 }
@@ -326,10 +348,12 @@ func (t *routingTable) Height() int {
 	return t.height
 }
 
+// Cursor returns the selected row index.
 func (t *routingTable) Cursor() int {
 	return t.cursor
 }
 
+// SetCursor moves the selection, clamped to the valid row range.
 func (t *routingTable) SetCursor(index int) {
 	if len(t.rows) == 0 {
 		t.cursor = 0
@@ -338,10 +362,12 @@ func (t *routingTable) SetCursor(index int) {
 	t.cursor = min(max(index, 0), len(t.rows)-1)
 }
 
+// move shifts the cursor by delta rows.
 func (t *routingTable) move(delta int) {
 	t.SetCursor(t.cursor + delta)
 }
 
+// Update handles the table's navigation keys.
 func (t routingTable) Update(msg tea.KeyMsg) (routingTable, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
@@ -360,6 +386,7 @@ func (t routingTable) Update(msg tea.KeyMsg) (routingTable, tea.Cmd) {
 	return t, nil
 }
 
+// resizeRouting refits the routing table to the terminal size.
 func (m *Model) resizeRouting(height, width int) {
 	if !m.routing.initialized {
 		return
@@ -377,6 +404,8 @@ func (m *Model) resizeRouting(height, width int) {
 	m.routing.table.SetColumns(routingColumns(providerW))
 }
 
+// refreshRoutingRows rebuilds the table rows from the current order, sort
+// and heatmap, keeping the same provider selected.
 func (m *Model) refreshRoutingRows() {
 	selected := m.routingSlugAt(m.routing.table.Cursor())
 	heat := m.routingHeatmap()
@@ -430,6 +459,9 @@ func (m *Model) routingEntries(heat map[string]routingHeat) []routingEntry {
 	return entries
 }
 
+// routingEntryLess orders two rows for the active sort: by name
+// alphabetically, otherwise by the sort metric with values-missing rows
+// last and name as the tiebreaker.
 func (m *Model) routingEntryLess(a, b routingEntry, heat map[string]routingHeat) bool {
 	nameA := strings.ToLower(routingProviderName(a.provider))
 	nameB := strings.ToLower(routingProviderName(b.provider))
@@ -458,6 +490,8 @@ func (m *Model) routingEntryLess(a, b routingEntry, heat map[string]routingHeat)
 	return valueA < valueB
 }
 
+// routingProviderName is the provider's display name, falling back to its
+// slug.
 func routingProviderName(provider routingProvider) string {
 	if provider.Slug != "" {
 		return provider.Slug
@@ -465,6 +499,8 @@ func routingProviderName(provider routingProvider) string {
 	return provider.Name
 }
 
+// routingSortMetric returns the numeric value a row is sorted by, and
+// whether the provider has that metric at all.
 func routingSortMetric(provider routingProvider, key routingSortKey, heat map[string]routingHeat) (float64, bool) {
 	switch key {
 	case routingSortThroughput:
@@ -483,6 +519,8 @@ func routingSortMetric(provider routingProvider, key routingSortKey, heat map[st
 	return 0, false
 }
 
+// setRoutingSort switches the sort, toggling direction when the same key
+// is pressed again, and rejects sorts whose data is unavailable.
 func (m *Model) setRoutingSort(key routingSortKey) {
 	if key != routingSortName && !m.hasRoutingSortMetric(key) {
 		switch key {
@@ -509,6 +547,8 @@ func (m *Model) setRoutingSort(key routingSortKey) {
 	m.statusIsError = false
 }
 
+// hasRoutingSortMetric reports whether at least one provider has the data
+// the given sort needs.
 func (m *Model) hasRoutingSortMetric(key routingSortKey) bool {
 	heat := m.routingHeatmap()
 	for _, provider := range m.routing.providers {
@@ -519,6 +559,7 @@ func (m *Model) hasRoutingSortMetric(key routingSortKey) bool {
 	return false
 }
 
+// routingSortStatus describes the active sort for the status line.
 func (m *Model) routingSortStatus() string {
 	desc := m.routing.sortDesc
 	switch m.routing.sortBy {
@@ -547,6 +588,7 @@ func (m *Model) routingSortStatus() string {
 	}
 }
 
+// clearRoutingSort restores the default routing-order sort.
 func (m *Model) clearRoutingSort() {
 	if m.routing.sortBy == routingSortOrder {
 		return
@@ -558,6 +600,7 @@ func (m *Model) clearRoutingSort() {
 	m.statusIsError = false
 }
 
+// routingSortLabel renders the sort indicator shown in the header.
 func (m *Model) routingSortLabel() string {
 	var label string
 	switch m.routing.sortBy {
@@ -578,6 +621,8 @@ func (m *Model) routingSortLabel() string {
 	return label + "↑"
 }
 
+// routingSortColumn maps the active sort to its column index for the
+// arrow marker, or -1 for the routing-order pseudo-sort.
 func (m *Model) routingSortColumn() int {
 	switch m.routing.sortBy {
 	case routingSortName:
@@ -593,6 +638,8 @@ func (m *Model) routingSortColumn() int {
 	}
 }
 
+// providerBySlug looks up a provider, returning a bare placeholder when the
+// slug is in the order but has no endpoint data.
 func providerBySlug(providers map[string]routingProvider, slug string) routingProvider {
 	if provider, ok := providers[slug]; ok {
 		return provider
@@ -600,6 +647,7 @@ func providerBySlug(providers map[string]routingProvider, slug string) routingPr
 	return routingProvider{Slug: slug}
 }
 
+// routingRow renders a provider as plain (unstyled) table cells.
 func routingRow(provider routingProvider, order string) []string {
 	context := "-"
 	if provider.Context > 0 {
@@ -644,6 +692,8 @@ func routingRowWithValue(provider routingProvider, order string, heat routingHea
 	return out
 }
 
+// discountMultiplier converts OpenRouter's discount fraction into a price
+// multiplier, clamped to 0..1.
 func (p routingProvider) discountMultiplier() float64 {
 	if p.Discount == nil {
 		return 1
@@ -651,10 +701,12 @@ func (p routingProvider) discountMultiplier() float64 {
 	return 1 - min(max(*p.Discount, 0), 1)
 }
 
+// effectivePrompt is the prompt price after the endpoint discount.
 func (p routingProvider) effectivePrompt() float64 {
 	return p.Prompt * p.discountMultiplier()
 }
 
+// effectiveCompletion is the completion price after the endpoint discount.
 func (p routingProvider) effectiveCompletion() float64 {
 	return p.Completion * p.discountMultiplier()
 }
@@ -763,6 +815,8 @@ var (
 	routingValueTextColor = lipgloss.Color("#111827")
 )
 
+// routingTableView renders the header, separator and the visible window of
+// rows around the cursor, with heatmap coloring applied.
 func (m *Model) routingTableView() string {
 	columns := m.routing.table.Columns()
 	heat := m.routingHeatmap()
@@ -810,6 +864,9 @@ func (m *Model) routingTableView() string {
 	return b.String()
 }
 
+// renderRoutingRow styles one row: the value cell gets a heatmap
+// background, the throughput and cost cells get heatmap text colors, and
+// the selected row is highlighted.
 func renderRoutingRow(columns []routingColumn, row []string, heat routingHeat, selected bool) string {
 	var b strings.Builder
 	for i, column := range columns {
@@ -867,6 +924,8 @@ func fitRoutingCell(text string, width int) string {
 }
 
 // heatColor maps a 0..1 score to a red-yellow-green gradient.
+// heatColor maps a 0..1 score onto a red→yellow→green gradient in two
+// halves so the middle of the range lands on yellow.
 func heatColor(score float64) lipgloss.Color {
 	score = min(max(score, 0), 1)
 	from, to := "#EF4444", "#EAB308"
@@ -878,6 +937,7 @@ func heatColor(score float64) lipgloss.Color {
 	return lipgloss.Color(blendHex(from, to, progress))
 }
 
+// blendHex linearly interpolates two #RRGGBB colors.
 func blendHex(from, to string, progress float64) string {
 	fromR, fromG, fromB := parseHex(from)
 	toR, toG, toB := parseHex(to)
@@ -885,11 +945,13 @@ func blendHex(from, to string, progress float64) string {
 	return fmt.Sprintf("#%02X%02X%02X", lerp(fromR, toR), lerp(fromG, toG), lerp(fromB, toB))
 }
 
+// parseHex decodes #RRGGBB; malformed input yields zeros.
 func parseHex(color string) (int, int, int) {
 	value, _ := strconv.ParseUint(strings.TrimPrefix(color, "#"), 16, 24)
 	return int(value>>16) & 0xFF, int(value>>8) & 0xFF, int(value) & 0xFF
 }
 
+// formatPercent renders an optional uptime value, or "-".
 func formatPercent(value *float64) string {
 	if value == nil {
 		return "-"
@@ -897,6 +959,7 @@ func formatPercent(value *float64) string {
 	return fmt.Sprintf("%.1f%%", *value)
 }
 
+// formatLatency renders the p50 time-to-first-token, or "-".
 func formatLatency(stats *components.PercentileStats) string {
 	if stats == nil || stats.P50 <= 0 {
 		return "-"
@@ -904,6 +967,7 @@ func formatLatency(stats *components.PercentileStats) string {
 	return formatMillis(stats.P50)
 }
 
+// formatThroughput renders the p50 tokens-per-second, or "-".
 func formatThroughput(stats *components.PercentileStats) string {
 	if stats == nil || stats.P50 <= 0 {
 		return "-"
@@ -911,6 +975,7 @@ func formatThroughput(stats *components.PercentileStats) string {
 	return fmt.Sprintf("%.0f", stats.P50)
 }
 
+// routingSlugAt returns the provider slug in the row at index, or "".
 func (m *Model) routingSlugAt(index int) string {
 	rows := m.routing.table.Rows()
 	if index < 0 || index >= len(rows) || len(rows[index]) < 2 {
@@ -919,6 +984,7 @@ func (m *Model) routingSlugAt(index int) string {
 	return rows[index][1]
 }
 
+// routingIndex finds the row index of a provider slug, or -1.
 func (m *Model) routingIndex(slug string) int {
 	for i := range m.routing.table.Rows() {
 		if m.routingSlugAt(i) == slug {
@@ -928,6 +994,7 @@ func (m *Model) routingIndex(slug string) int {
 	return -1
 }
 
+// routingProviderBySlug finds the endpoint data for a slug.
 func (m *Model) routingProviderBySlug(slug string) (routingProvider, bool) {
 	for _, provider := range m.routing.providers {
 		if provider.Slug == slug {
@@ -988,6 +1055,7 @@ func (m *Model) routingSelectionDetail() string {
 	return label + " · " + strings.Join(stats, " · ")
 }
 
+// formatMillis renders milliseconds as ms below 1s and seconds above.
 func formatMillis(ms float64) string {
 	if ms >= 1000 {
 		return fmt.Sprintf("%.1fs", ms/1000)
@@ -995,6 +1063,9 @@ func formatMillis(ms float64) string {
 	return fmt.Sprintf("%.0fms", ms)
 }
 
+// updateRouting handles keys while the routing view is open. When the
+// add-provider input is focused it captures keys; otherwise the keys drive
+// ordering, sorting and navigation.
 func (m *Model) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.routing.inputActive {
 		switch msg.String() {
@@ -1115,6 +1186,8 @@ func (m *Model) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// addRoutingProvider appends a manually entered provider slug to the
+// routing order after validating its characters; duplicates are ignored.
 func (m *Model) addRoutingProvider(value string) {
 	slug := strings.TrimSpace(value)
 	if slug == "" {
@@ -1139,6 +1212,8 @@ func (m *Model) addRoutingProvider(value string) {
 	m.statusIsError = false
 }
 
+// applyRouting pushes the current order and fallback choice into the
+// config so it is persisted on the next save.
 func (m *Model) applyRouting() {
 	m.cfg.SetRouting(m.routing.modelID, opencode.Routing{
 		Order:          append([]string(nil), m.routing.order...),
@@ -1148,6 +1223,8 @@ func (m *Model) applyRouting() {
 	m.allowed = m.cfg.AllowedIDs()
 }
 
+// handleEndpoints ingests a completed endpoint fetch, ignoring stale
+// responses for a model other than the one being edited.
 func (m *Model) handleEndpoints(msg endpointsLoadedMsg) {
 	if !m.routing.initialized || msg.modelID != m.routing.modelID {
 		return
@@ -1158,6 +1235,7 @@ func (m *Model) handleEndpoints(msg endpointsLoadedMsg) {
 	m.refreshRoutingRows()
 }
 
+// routingView renders the routing editor screen.
 func (m *Model) routingView() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(" Routing: " + m.routing.modelID + " "))
@@ -1228,6 +1306,7 @@ func (m *Model) routingView() string {
 	return b.String()
 }
 
+// indexOf returns the position of target in values, or -1.
 func indexOf(values []string, target string) int {
 	for i, value := range values {
 		if value == target {
@@ -1237,6 +1316,7 @@ func indexOf(values []string, target string) int {
 	return -1
 }
 
+// isProviderSlugChar reports whether r may appear in a provider slug.
 func isProviderSlugChar(r rune) bool {
 	switch {
 	case r >= 'a' && r <= 'z':
