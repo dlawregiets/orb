@@ -92,14 +92,14 @@ jobs:
 
       - name: Verify static binary
         run: |
-          file bin/orb
-          file bin/orb | grep -q 'statically linked'
+          file build/orb
+          file build/orb | grep -q 'statically linked'
 
       - name: Verify version
         if: matrix.arch == 'amd64'
         env:
           VERSION: ${{ needs.validate.outputs.version }}
-        run: test "$(./bin/orb --version)" = "orb $VERSION"
+        run: test "$(./build/orb --version)" = "orb $VERSION"
 
       - name: Package
         env:
@@ -109,7 +109,7 @@ jobs:
           set -euo pipefail
           name="orb_${VERSION}_linux_${ARCH}"
           mkdir -p "dist/$name"
-          install -m 0755 bin/orb "dist/$name/orb"
+          install -m 0755 build/orb "dist/$name/orb"
           install -m 0644 README.md LICENSE "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           rm -rf "dist/$name"
