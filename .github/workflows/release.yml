@@ -1,0 +1,158 @@
+name: Release
+
+# GitFlow releases are tagged on main after the release or hotfix branch has
+# been merged. Pushing the tag builds and publishes the release.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a semantic version (expected vMAJOR.MINOR.PATCH)"
+            exit 1
+          fi
+
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          branches=$(git branch -r --contains "$(git rev-parse 'HEAD^{commit}')" | sed 's/^[[:space:]]*//')
+          if [[ "${version%%+*}" == *-* ]]; then
+            # Release candidates may be tagged on a release or hotfix branch
+            # before that branch is merged into main.
+            if ! grep -Eq '^origin/(main|release/.+|hotfix/.+)$' <<<"$branches"; then
+              echo "::error::Tag '$TAG' is on neither main nor a release or hotfix branch"
+              exit 1
+            fi
+          elif ! grep -qx 'origin/main' <<<"$branches"; then
+            echo "::error::Tag '$TAG' is not on main; merge the release or hotfix branch into main before tagging"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -count=1 ./...
+
+  build:
+    name: Build linux/${{ matrix.arch }}
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          GOARCH: ${{ matrix.arch }}
+        run: make build
+
+      - name: Verify static binary
+        run: |
+          file bin/orb
+          file bin/orb | grep -q 'statically linked'
+
+      - name: Verify version
+        if: matrix.arch == 'amd64'
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: test "$(./bin/orb --version)" = "orb $VERSION"
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          name="orb_${VERSION}_linux_${ARCH}"
+          mkdir -p "dist/$name"
+          install -m 0755 bin/orb "dist/$name/orb"
+          install -m 0644 README.md LICENSE "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          rm -rf "dist/$name"
+
+      - name: Upload release tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: orb-release-linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download tarballs
+        uses: actions/download-artifact@v8
+        with:
+          pattern: orb-release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Write checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -- *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          args=(--title "orb $VERSION" --generate-notes --verify-tag)
+          if [[ "${VERSION%%+*}" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$TAG" ./dist/*.tar.gz ./dist/SHA256SUMS "${args[@]}"
