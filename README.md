@@ -27,8 +27,8 @@ By default orb edits the global OpenCode configuration:
 file that exists.
 
 `OPENROUTER_API_KEY` is used for catalog and endpoint requests when present.
-OpenRouter only returns latency and throughput statistics to authenticated
-requests; uptime and pricing work without a key.
+OpenRouter only returns throughput statistics to authenticated requests;
+pricing works without a key.
 
 ## Keys
 
@@ -64,18 +64,18 @@ output cost), or `v` (`Value` score). Press the same key again to reverse the
 direction, and `u` to return to routing order. The active column header shows
 `↑` or `↓`.
 
-Providers are shown with their p50 time to first token (`TTFT`), p50 output
-throughput (`t/s`), and 30-minute uptime (`Up 30m`). The `Value` column blends
-throughput with effective output price (after OpenRouter's endpoint discount)
-to make fast, cheap providers stand out: green is the best combination on the
-page and red the worst. The `t/s` and `Comp/M` cells use the same heat scale,
-so they show which half of the tradeoff each provider wins.
+Providers are shown with their p50 output throughput (`t/s`) and effective
+request prices. The `Value` column blends throughput with effective output
+price (after OpenRouter's endpoint discount) to make fast, cheap providers
+stand out: green is the best combination on the page and red the worst. The
+`t/s` and `Comp/M` cells use the same heat scale, so they show which half of
+the tradeoff each provider wins.
 
-The line below the table adds the 5-minute and 1-day uptime plus p90 latency
-and throughput for the selected provider. Providers with several endpoints are
-averaged, and latency/throughput only appear when `OPENROUTER_API_KEY` is set.
-Without a key there is no speed ranking, so `Value` shows a dash and only the
-`Comp/M` cell is colored.
+The line below the table adds p90 throughput and the selected provider's
+effective output price. Providers with several endpoints are averaged, and
+throughput only appears when `OPENROUTER_API_KEY` is set. Without a key there
+is no speed ranking, so `Value` shows a dash and only the `Comp/M` cell is
+colored.
 
 ## How the OpenCode config is managed
 

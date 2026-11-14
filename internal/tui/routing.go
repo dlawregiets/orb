@@ -20,7 +20,6 @@ import (
 type routingProvider struct {
 	Slug       string
 	Name       string
-	Context    int64
 	Prompt     float64
 	Completion float64
 	// Priced reports whether the catalog supplied pricing for this provider.
@@ -31,12 +30,8 @@ type routingProvider struct {
 	Discount  *float64
 	Endpoints int
 
-	// Performance statistics are averaged across the provider's endpoints.
-	// Latency and throughput are only populated for authenticated requests.
-	Uptime5m   *float64
-	Uptime30m  *float64
-	Uptime1d   *float64
-	Latency    *components.PercentileStats
+	// Throughput is averaged across the provider's endpoints and is only
+	// populated for authenticated requests.
 	Throughput *components.PercentileStats
 }
 
@@ -88,9 +83,9 @@ type routingTable struct {
 }
 
 const (
-	routingThroughputColumn = 4
-	routingValueColumn      = 5
-	routingCostColumn       = 8
+	routingThroughputColumn = 2
+	routingValueColumn      = 3
+	routingCostColumn       = 5
 )
 
 // routingHeat holds 0..1 scores, where 1 is the fastest or cheapest provider
@@ -148,16 +143,8 @@ func fetchEndpoints(client *openrouter.OpenRouter, modelID string) tea.Cmd {
 // into a single routingProvider per upstream slug.
 type providerAccumulator struct {
 	provider   routingProvider
-	latency    components.PercentileStats
-	latencyN   int
 	throughput components.PercentileStats
 	throughN   int
-	uptime5m   float64
-	uptime5mN  int
-	uptime30m  float64
-	uptime30N  int
-	uptime1d   float64
-	uptime1dN  int
 }
 
 // providersFromEndpoints groups endpoints by upstream provider and averages
@@ -187,18 +174,8 @@ func providersFromEndpoints(endpoints []components.PublicEndpoint) []routingProv
 			order = append(order, slug)
 		}
 		acc.provider.Endpoints++
-		if endpoint.ContextLength > acc.provider.Context {
-			acc.provider.Context = endpoint.ContextLength
-		}
 		if acc.provider.Name == "" {
 			acc.provider.Name = string(endpoint.ProviderName)
-		}
-		if endpoint.LatencyLast30m != nil {
-			acc.latency.P50 += endpoint.LatencyLast30m.P50
-			acc.latency.P75 += endpoint.LatencyLast30m.P75
-			acc.latency.P90 += endpoint.LatencyLast30m.P90
-			acc.latency.P99 += endpoint.LatencyLast30m.P99
-			acc.latencyN++
 		}
 		if endpoint.ThroughputLast30m != nil {
 			acc.throughput.P50 += endpoint.ThroughputLast30m.P50
@@ -207,41 +184,16 @@ func providersFromEndpoints(endpoints []components.PublicEndpoint) []routingProv
 			acc.throughput.P99 += endpoint.ThroughputLast30m.P99
 			acc.throughN++
 		}
-		if endpoint.UptimeLast5m != nil {
-			acc.uptime5m += *endpoint.UptimeLast5m
-			acc.uptime5mN++
-		}
-		if endpoint.UptimeLast30m != nil {
-			acc.uptime30m += *endpoint.UptimeLast30m
-			acc.uptime30N++
-		}
-		if endpoint.UptimeLast1d != nil {
-			acc.uptime1d += *endpoint.UptimeLast1d
-			acc.uptime1dN++
-		}
 	}
 
 	out := make([]routingProvider, 0, len(accumulators))
 	for _, slug := range order {
 		acc := accumulators[slug]
-		acc.provider.Uptime5m = averageValue(acc.uptime5m, acc.uptime5mN)
-		acc.provider.Uptime30m = averageValue(acc.uptime30m, acc.uptime30N)
-		acc.provider.Uptime1d = averageValue(acc.uptime1d, acc.uptime1dN)
-		acc.provider.Latency = averagePercentiles(acc.latency, acc.latencyN)
 		acc.provider.Throughput = averagePercentiles(acc.throughput, acc.throughN)
 		out = append(out, acc.provider)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
 	return out
-}
-
-// averageValue returns total/count, or nil when nothing contributed.
-func averageValue(total float64, count int) *float64 {
-	if count == 0 {
-		return nil
-	}
-	value := total / float64(count)
-	return &value
 }
 
 // averagePercentiles averages each percentile separately, returning nil
@@ -285,6 +237,7 @@ func (m *Model) openRouting(modelID string, returnView view) tea.Cmd {
 	m.routing.input.Blur()
 	m.routing.table = newRoutingTable()
 	m.resizeRouting(m.height, m.width)
+	m.stopMarquee()
 	m.view = viewRouting
 	m.status = ""
 	m.statusIsError = false
@@ -305,11 +258,8 @@ func routingColumns(providerWidth int) []routingColumn {
 	return []routingColumn{
 		{Title: "Order", Width: 5},
 		{Title: "Provider", Width: providerWidth},
-		{Title: "Up 30m", Width: 7},
-		{Title: "TTFT", Width: 7},
 		{Title: "t/s", Width: 6},
 		{Title: "Value", Width: 6},
-		{Title: "Context", Width: 8},
 		{Title: "Prompt/M", Width: 10},
 		{Title: "Comp/M", Width: 10},
 		{Title: "EPs", Width: 4},
@@ -649,10 +599,6 @@ func providerBySlug(providers map[string]routingProvider, slug string) routingPr
 
 // routingRow renders a provider as plain (unstyled) table cells.
 func routingRow(provider routingProvider, order string) []string {
-	context := "-"
-	if provider.Context > 0 {
-		context = formatContext(&provider.Context)
-	}
 	prompt := "-"
 	completion := "-"
 	if provider.Priced {
@@ -666,10 +612,7 @@ func routingRow(provider routingProvider, order string) []string {
 	return []string{
 		order,
 		provider.Slug,
-		formatPercent(provider.Uptime30m),
-		formatLatency(provider.Latency),
 		formatThroughput(provider.Throughput),
-		context,
 		prompt,
 		completion,
 		eps,
@@ -677,7 +620,7 @@ func routingRow(provider routingProvider, order string) []string {
 }
 
 // routingRowWithValue inserts the combined heatmap score between the
-// throughput and context columns. routingRow stays value-free because the
+// throughput and pricing columns. routingRow stays value-free because the
 // score depends on the other providers in the page.
 func routingRowWithValue(provider routingProvider, order string, heat routingHeat) []string {
 	row := routingRow(provider, order)
@@ -951,22 +894,6 @@ func parseHex(color string) (int, int, int) {
 	return int(value>>16) & 0xFF, int(value>>8) & 0xFF, int(value) & 0xFF
 }
 
-// formatPercent renders an optional uptime value, or "-".
-func formatPercent(value *float64) string {
-	if value == nil {
-		return "-"
-	}
-	return fmt.Sprintf("%.1f%%", *value)
-}
-
-// formatLatency renders the p50 time-to-first-token, or "-".
-func formatLatency(stats *components.PercentileStats) string {
-	if stats == nil || stats.P50 <= 0 {
-		return "-"
-	}
-	return formatMillis(stats.P50)
-}
-
 // formatThroughput renders the p50 tokens-per-second, or "-".
 func formatThroughput(stats *components.PercentileStats) string {
 	if stats == nil || stats.P50 <= 0 {
@@ -1005,7 +932,7 @@ func (m *Model) routingProviderBySlug(slug string) (routingProvider, bool) {
 }
 
 // routingSelectionDetail summarizes the selected provider, including the
-// percentile breakdown behind the table's p50 latency and throughput values.
+// percentile breakdown behind the table's p50 throughput value.
 func (m *Model) routingSelectionDetail() string {
 	slug := m.routingSlugAt(m.routing.table.Cursor())
 	if slug == "" {
@@ -1021,20 +948,7 @@ func (m *Model) routingSelectionDetail() string {
 		label = provider.Name + " (" + slug + ")"
 	}
 
-	stats := make([]string, 0, 5)
-	if provider.Uptime5m != nil || provider.Uptime30m != nil || provider.Uptime1d != nil {
-		stats = append(stats, fmt.Sprintf("up 5m/30m/1d %s / %s / %s",
-			formatPercent(provider.Uptime5m),
-			formatPercent(provider.Uptime30m),
-			formatPercent(provider.Uptime1d),
-		))
-	}
-	if provider.Latency != nil {
-		stats = append(stats, fmt.Sprintf("TTFT p50 %s p90 %s",
-			formatMillis(provider.Latency.P50),
-			formatMillis(provider.Latency.P90),
-		))
-	}
+	stats := make([]string, 0, 3)
 	if provider.Throughput != nil {
 		stats = append(stats, fmt.Sprintf("t/s p50 %.0f p90 %.0f", provider.Throughput.P50, provider.Throughput.P90))
 	}
@@ -1050,17 +964,9 @@ func (m *Model) routingSelectionDetail() string {
 		stats = append(stats, "out "+out+"/M")
 	}
 	if len(stats) == 0 {
-		return label + " · no recent performance data"
+		return label + " · no recent performance or pricing data"
 	}
 	return label + " · " + strings.Join(stats, " · ")
-}
-
-// formatMillis renders milliseconds as ms below 1s and seconds above.
-func formatMillis(ms float64) string {
-	if ms >= 1000 {
-		return fmt.Sprintf("%.1fs", ms/1000)
-	}
-	return fmt.Sprintf("%.0fms", ms)
 }
 
 // updateRouting handles keys while the routing view is open. When the
@@ -1092,7 +998,7 @@ func (m *Model) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "esc", "q":
 		m.view = m.routing.returnView
-		return m, nil
+		return m, m.maybeStartMarquee()
 
 	case "s":
 		return m, saveConfig(m.cfg)
@@ -1286,7 +1192,7 @@ func (m *Model) routingView() string {
 		}
 	}
 	if !m.authenticated && !m.routing.loading && m.routing.err == nil && len(m.routing.providers) > 0 {
-		b.WriteString(helpStyle.Render(" TTFT and t/s require OPENROUTER_API_KEY."))
+		b.WriteString(helpStyle.Render(" t/s requires OPENROUTER_API_KEY."))
 		fmt.Fprint(&b, "\n")
 	}
 

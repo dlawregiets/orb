@@ -46,6 +46,7 @@ func (m *Model) openAgents(modelID string, returnView view) tea.Cmd {
 	}
 	m.agents.input.SetValue("")
 	m.agents.input.Blur()
+	m.stopMarquee()
 	m.view = viewAgents
 	m.status = ""
 	m.statusIsError = false
@@ -141,7 +142,7 @@ func (m *Model) updateAgents(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "esc", "q":
 		m.view = m.agents.returnView
-		return m, nil
+		return m, m.maybeStartMarquee()
 
 	case "s":
 		return m, saveConfig(m.cfg)

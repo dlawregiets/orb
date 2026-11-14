@@ -33,11 +33,11 @@ func (m *Model) currentModelID() string {
 	case viewAgents:
 		return m.agents.modelID
 	}
-	row := m.table.SelectedRow()
-	if len(row) == 0 {
+	idx := m.table.Cursor()
+	if idx < 0 || idx >= len(m.filtered) {
 		return ""
 	}
-	return row[0]
+	return m.filtered[idx].ID
 }
 
 // toggleSelectedAllowed flips the selected model's membership in the

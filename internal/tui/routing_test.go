@@ -54,33 +54,15 @@ func TestProvidersFromEndpointsAggregatesStats(t *testing.T) {
 	if deepinfra.Endpoints != 2 {
 		t.Fatalf("expected 2 endpoints, got %d", deepinfra.Endpoints)
 	}
-	if deepinfra.Context != 128000 {
-		t.Fatalf("expected the largest context, got %d", deepinfra.Context)
-	}
 	if deepinfra.Prompt != 0.000001 {
 		t.Fatalf("expected the first listed price, got %v", deepinfra.Prompt)
-	}
-	if deepinfra.Latency == nil || deepinfra.Latency.P50 != 500 {
-		t.Fatalf("latency was not averaged: %#v", deepinfra.Latency)
-	}
-	if deepinfra.Latency.P90 != 1000 {
-		t.Fatalf("latency p90 was not averaged: %#v", deepinfra.Latency)
 	}
 	if deepinfra.Throughput == nil || deepinfra.Throughput.P50 != 50 {
 		t.Fatalf("throughput was not averaged: %#v", deepinfra.Throughput)
 	}
-	if deepinfra.Uptime5m == nil || *deepinfra.Uptime5m != 100 {
-		t.Fatalf("unexpected 5m uptime: %v", deepinfra.Uptime5m)
-	}
-	if deepinfra.Uptime30m == nil || *deepinfra.Uptime30m != 98 {
-		t.Fatalf("uptime was not averaged: %v", deepinfra.Uptime30m)
-	}
-	if deepinfra.Uptime1d == nil || *deepinfra.Uptime1d != 98 {
-		t.Fatalf("unexpected 1d uptime: %v", deepinfra.Uptime1d)
-	}
 
 	together := providers[1]
-	if together.Latency != nil || together.Throughput != nil || together.Uptime30m != nil {
+	if together.Throughput != nil {
 		t.Fatalf("expected no statistics for together: %#v", together)
 	}
 }
@@ -88,29 +70,24 @@ func TestProvidersFromEndpointsAggregatesStats(t *testing.T) {
 func TestRoutingRowFormatsStats(t *testing.T) {
 	provider := routingProvider{
 		Slug:       "deepinfra",
-		Context:    128000,
-		Uptime30m:  floatPtr(98.25),
-		Latency:    &components.PercentileStats{P50: 1500},
 		Throughput: &components.PercentileStats{P50: 65},
 		Endpoints:  2,
 	}
 
 	row := routingRow(provider, "1")
-	if row[2] != "98.2%" {
-		t.Fatalf("unexpected uptime cell: %q", row[2])
+	if row[2] != "65" {
+		t.Fatalf("unexpected throughput cell: %q", row[2])
 	}
-	if row[3] != "1.5s" {
-		t.Fatalf("unexpected latency cell: %q", row[3])
+	if row[3] != "-" || row[4] != "-" {
+		t.Fatalf("expected unknown pricing to render as -: %v", row)
 	}
-	if row[4] != "65" {
-		t.Fatalf("unexpected throughput cell: %q", row[4])
+	if row[5] != "2" {
+		t.Fatalf("unexpected endpoint count: %q", row[5])
 	}
 
 	empty := routingRow(routingProvider{Slug: "manual"}, "-")
-	for _, cell := range []string{empty[2], empty[3], empty[4]} {
-		if cell != "-" {
-			t.Fatalf("expected missing stats to render as -: %v", empty)
-		}
+	if empty[2] != "-" {
+		t.Fatalf("expected missing throughput to render as -: %v", empty)
 	}
 }
 
@@ -128,15 +105,15 @@ func TestRoutingProviderEffectivePricing(t *testing.T) {
 	if got := provider.effectiveCompletion(); got != 0.000002 {
 		t.Fatalf("unexpected effective completion price: %v", got)
 	}
-	if got := routingRow(provider, "1")[7]; got != "$2.000" {
+	if got := routingRow(provider, "1")[4]; got != "$2.000" {
 		t.Fatalf("expected discounted completion price, got %q", got)
 	}
 
 	free := routingProvider{Priced: true}
-	if got := routingRow(free, "1")[7]; got != "Free" {
+	if got := routingRow(free, "1")[4]; got != "Free" {
 		t.Fatalf("expected a known zero price to render as Free, got %q", got)
 	}
-	if got := routingRow(routingProvider{}, "1")[7]; got != "-" {
+	if got := routingRow(routingProvider{}, "1")[4]; got != "-" {
 		t.Fatalf("expected unknown pricing to render as -, got %q", got)
 	}
 }
@@ -302,7 +279,7 @@ func assertRoutingSlugs(t *testing.T, m *Model, want ...string) {
 	}
 }
 
-func TestRoutingSelectionDetailShowsPercentiles(t *testing.T) {
+func TestRoutingSelectionDetailShowsThroughput(t *testing.T) {
 	m, _ := testModel(t)
 	m.authenticated = true
 	m.view = viewRouting
@@ -313,26 +290,34 @@ func TestRoutingSelectionDetailShowsPercentiles(t *testing.T) {
 	m.routing.providers = []routingProvider{{
 		Slug:       "inference-net",
 		Name:       "InferenceNet",
-		Uptime5m:   floatPtr(100),
-		Uptime30m:  floatPtr(99.5),
-		Uptime1d:   floatPtr(98.8),
-		Latency:    &components.PercentileStats{P50: 1500, P90: 3200},
+		Priced:     true,
+		Completion: 0.000001,
 		Throughput: &components.PercentileStats{P50: 143, P90: 86},
 	}}
 	m.routing.order = []string{"inference-net"}
 	m.refreshRoutingRows()
 
 	detail := m.routingSelectionDetail()
-	for _, want := range []string{"InferenceNet", "up 5m/30m/1d 100.0%", "99.5%", "TTFT p50 1.5s p90 3.2s", "t/s p50 143 p90 86"} {
+	for _, want := range []string{"InferenceNet", "t/s p50 143 p90 86", "value 50/100"} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("detail %q does not contain %q", detail, want)
 		}
 	}
+	for _, unwanted := range []string{"uptime", "TTFT", "up 5m"} {
+		if strings.Contains(detail, unwanted) {
+			t.Fatalf("detail %q should not contain %q", detail, unwanted)
+		}
+	}
 
 	view := m.View()
-	for _, want := range []string{"Up 30m", "TTFT", "t/s", "Value"} {
+	for _, want := range []string{"t/s", "Value"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("routing view is missing %q:\n%s", want, view)
+		}
+	}
+	for _, unwanted := range []string{"Up 30m", "TTFT", "Context"} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("routing view should not contain %q:\n%s", unwanted, view)
 		}
 	}
 }
@@ -345,7 +330,7 @@ func TestRoutingSelectionDetailWarnsWhenUnauthenticated(t *testing.T) {
 	m.routing.modelID = "~deepseek/deepseek-flash-latest"
 	m.routing.table = newRoutingTable()
 	m.resizeRouting(40, 120)
-	m.routing.providers = []routingProvider{{Slug: "together", Name: "Together", Uptime30m: floatPtr(100)}}
+	m.routing.providers = []routingProvider{{Slug: "together", Name: "Together"}}
 	m.routing.order = []string{"together"}
 	m.refreshRoutingRows()
 

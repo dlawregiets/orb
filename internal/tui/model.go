@@ -43,6 +43,17 @@ type savedMsg struct {
 	warnings []string
 }
 
+// marqueeTickMsg advances the horizontal scroll of an overlong selected model
+// name in the list view.
+type marqueeTickMsg struct{}
+
+// marqueeInterval is the delay between marquee steps.
+const marqueeInterval = 120 * time.Millisecond
+
+// marqueeGap is the number of blank runes inserted between repeats of an
+// overlong model name while it scrolls.
+const marqueeGap = 3
+
 // fetchModels returns a tea.Cmd that loads the OpenRouter model catalog as a
 // modelsLoadedMsg, or errMsg on failure.
 func fetchModels(client *openrouter.OpenRouter) tea.Cmd {
@@ -90,6 +101,16 @@ type Model struct {
 	status        string
 	statusIsError bool
 	confirmQuit   bool
+
+	// detailOffset is the first visible line of the scrollable detail body.
+	detailOffset int
+
+	// The list view scrolls the selected model name horizontally when it does
+	// not fit the Model column. modelColWidth tracks that column's width.
+	modelColWidth int
+	marqueeOffset int
+	marqueeActive bool
+	marqueeRow    int
 }
 
 // New creates a new Model with the given OpenRouter client and OpenCode config.
@@ -151,6 +172,8 @@ func New(client *openrouter.OpenRouter, cfg *opencode.Config, authenticated bool
 		loading:       true,
 		routing:       routingState{input: ri},
 		agents:        newAgentState(),
+		modelColWidth: 60,
+		marqueeRow:    -1,
 	}
 }
 
@@ -189,6 +212,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			small = 8
 			modelW = w - onW - small*5
 		}
+		m.modelColWidth = modelW
 		m.table.SetColumns([]table.Column{
 			{Title: "Model", Width: modelW},
 			{Title: "On", Width: onW},
@@ -209,6 +233,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.models = msg.models
 		m.loading = false
 		m.applyFilters()
+		return m, m.maybeStartMarquee()
+
+	case marqueeTickMsg:
+		if m.view != viewList || !m.marqueeNeeded() {
+			m.stopMarquee()
+			return m, nil
+		}
+		m.advanceMarquee()
+		return m, tea.Tick(marqueeInterval, func(time.Time) tea.Msg {
+			return marqueeTickMsg{}
+		})
 
 	case savedMsg:
 		if msg.err != nil {
@@ -241,7 +276,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "esc", "q", "enter":
 				m.view = viewList
-				return m, nil
+				m.detailOffset = 0
+				return m, m.maybeStartMarquee()
 			case " ":
 				m.toggleSelectedAllowed()
 				return m, nil
@@ -257,6 +293,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "s":
 				return m, saveConfig(m.cfg)
+			case "up", "k":
+				m.scrollDetail(-1)
+			case "down", "j":
+				m.scrollDetail(1)
+			case "pgup", "b", "ctrl+u":
+				m.scrollDetail(-m.detailVisibleHeight())
+			case "pgdown", "f", "ctrl+d":
+				m.scrollDetail(m.detailVisibleHeight())
+			case "home", "g":
+				m.detailOffset = 0
+			case "end", "G":
+				m.detailOffset = m.detailMaxOffset()
 			}
 			return m, nil
 		}
@@ -373,16 +421,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "enter":
-			row := m.table.SelectedRow()
-			if len(row) > 0 && row[0] != "" {
-				id := row[0]
-				for i, mo := range m.filtered {
-					if mo.ID == id || mo.Name == id {
-						m.selectedIdx = i
-						m.view = viewDetail
-						break
-					}
-				}
+			if idx := m.table.Cursor(); idx >= 0 && idx < len(m.filtered) {
+				m.selectedIdx = idx
+				m.view = viewDetail
+				m.detailOffset = 0
+				m.stopMarquee()
 			}
 			return m, nil
 		}
@@ -390,7 +433,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
-	return m, cmd
+	m.resetMarqueeForSelection()
+	return m, tea.Batch(cmd, m.maybeStartMarquee())
 }
 
 // applyFilters recomputes m.filtered from the full model catalog according
@@ -493,6 +537,108 @@ func (m *Model) applyFilters() {
 		})
 	}
 	m.table.SetRows(rows)
+	m.marqueeRow = -1
+	m.marqueeOffset = 0
+}
+
+// marqueeNeeded reports whether the selected model name overflows the Model
+// column and therefore needs to scroll.
+func (m *Model) marqueeNeeded() bool {
+	idx := m.table.Cursor()
+	if idx < 0 || idx >= len(m.filtered) || m.modelColWidth <= 0 {
+		return false
+	}
+	return len([]rune(m.filtered[idx].ID)) > m.modelColWidth
+}
+
+// maybeStartMarquee schedules the first marquee tick when the selected name
+// does not fit. It does nothing when an animation is already running.
+func (m *Model) maybeStartMarquee() tea.Cmd {
+	if m.marqueeActive || m.view != viewList || !m.marqueeNeeded() {
+		return nil
+	}
+	m.marqueeActive = true
+	m.marqueeRow = -1
+	m.marqueeOffset = 0
+	return tea.Tick(marqueeInterval, func(time.Time) tea.Msg {
+		return marqueeTickMsg{}
+	})
+}
+
+// advanceMarquee shifts the visible window one rune and repaints the row.
+func (m *Model) advanceMarquee() {
+	idx := m.table.Cursor()
+	if m.marqueeRow != idx {
+		m.restoreMarqueeCell()
+		m.marqueeRow = idx
+		m.marqueeOffset = 0
+	} else {
+		m.marqueeOffset++
+	}
+	m.applyMarqueeCell()
+}
+
+// resetMarqueeForSelection restores the old row as soon as the cursor moves.
+func (m *Model) resetMarqueeForSelection() {
+	if m.marqueeRow < 0 || m.marqueeRow == m.table.Cursor() {
+		return
+	}
+	m.restoreMarqueeCell()
+	m.marqueeRow = -1
+	m.marqueeOffset = 0
+}
+
+// stopMarquee restores the full name and halts the animation.
+func (m *Model) stopMarquee() {
+	m.restoreMarqueeCell()
+	m.marqueeActive = false
+	m.marqueeRow = -1
+	m.marqueeOffset = 0
+}
+
+// restoreMarqueeCell puts the row's full name back into the table.
+func (m *Model) restoreMarqueeCell() {
+	rows := m.table.Rows()
+	idx := m.marqueeRow
+	if idx < 0 || idx >= len(rows) || idx >= len(m.filtered) || len(rows[idx]) == 0 {
+		return
+	}
+	rows[idx][0] = m.filtered[idx].ID
+	m.table.SetRows(rows)
+}
+
+// applyMarqueeCell replaces the selected row's name with a shifted window.
+func (m *Model) applyMarqueeCell() {
+	rows := m.table.Rows()
+	idx := m.table.Cursor()
+	if idx < 0 || idx >= len(rows) || idx >= len(m.filtered) || len(rows[idx]) == 0 {
+		return
+	}
+	rows[idx][0] = marqueeWindow(m.filtered[idx].ID, m.modelColWidth, m.marqueeOffset)
+	m.table.SetRows(rows)
+}
+
+// marqueeWindow returns width runes from the name, looping through a short
+// gap so the text scrolls continuously.
+func marqueeWindow(name string, width, offset int) string {
+	runes := []rune(name)
+	if width <= 0 || len(runes) == 0 {
+		return name
+	}
+	cycle := len(runes) + marqueeGap
+	offset %= cycle
+	if offset < 0 {
+		offset += cycle
+	}
+	window := make([]rune, 0, width)
+	for pos := offset; len(window) < width; pos++ {
+		if pos%cycle < len(runes) {
+			window = append(window, runes[pos%cycle])
+		} else {
+			window = append(window, ' ')
+		}
+	}
+	return string(window)
 }
 
 // View renders the current view.
@@ -582,23 +728,85 @@ func (m *Model) listView() string {
 	return b.String()
 }
 
-// detailView renders the selected model's metadata. It falls back to the
-// list view when the selection is no longer valid (e.g. after refiltering).
+// detailView renders the selected model's metadata. The body scrolls when it
+// is taller than the terminal. It falls back to the list view when the
+// selection is no longer valid (e.g. after refiltering).
 func (m *Model) detailView() string {
-	if m.selectedIdx >= len(m.filtered) {
+	if m.selectedIdx < 0 || m.selectedIdx >= len(m.filtered) {
 		m.view = viewList
 		return m.listView()
 	}
 
 	model := m.filtered[m.selectedIdx]
-	valWidth := m.width - 26
-	if valWidth < 30 {
-		valWidth = 30
-	}
+	lines := m.detailLines(model, m.detailValueWidth())
+	visible := m.detailVisibleHeight()
+	maxOffset := max(len(lines)-visible, 0)
+	m.detailOffset = min(max(m.detailOffset, 0), maxOffset)
+	end := min(m.detailOffset+visible, len(lines))
 
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(" " + model.Name + " "))
 	fmt.Fprint(&b, "\n\n")
+	for _, line := range lines[m.detailOffset:end] {
+		b.WriteString(line)
+		fmt.Fprint(&b, "\n")
+	}
+
+	if maxOffset > 0 {
+		percent := int(float64(m.detailOffset)/float64(maxOffset)*100 + 0.5)
+		b.WriteString(helpStyle.Render(fmt.Sprintf(" %d%%  ↑↓ scroll", percent)))
+		fmt.Fprint(&b, "\n")
+	}
+
+	b.WriteString(helpStyle.Render(" space allow  a agents  p routing  s save  esc/q back"))
+	if m.status != "" {
+		fmt.Fprint(&b, "\n")
+		if m.statusIsError {
+			b.WriteString(errorStyle.Render(" " + m.status))
+		} else {
+			b.WriteString(keyStyle.Render(" " + m.status))
+		}
+	}
+
+	return detailStyle.Render(b.String())
+}
+
+// detailValueWidth is the wrap width for detail field values.
+func (m *Model) detailValueWidth() int {
+	valWidth := m.width - 26
+	if valWidth < 30 {
+		valWidth = 30
+	}
+	return valWidth
+}
+
+// detailVisibleHeight is the number of detail body lines that fit between the
+// title and the footer.
+func (m *Model) detailVisibleHeight() int {
+	h := m.height - 9
+	if h < 3 {
+		h = 3
+	}
+	return h
+}
+
+// detailMaxOffset is the largest scroll offset for the selected model.
+func (m *Model) detailMaxOffset() int {
+	if m.selectedIdx < 0 || m.selectedIdx >= len(m.filtered) {
+		return 0
+	}
+	lines := m.detailLines(m.filtered[m.selectedIdx], m.detailValueWidth())
+	return max(len(lines)-m.detailVisibleHeight(), 0)
+}
+
+// scrollDetail moves the detail body by delta lines, clamped to its bounds.
+func (m *Model) scrollDetail(delta int) {
+	m.detailOffset = min(max(m.detailOffset+delta, 0), m.detailMaxOffset())
+}
+
+// detailLines renders the scrollable body of the detail view as text lines.
+func (m *Model) detailLines(model components.Model, valWidth int) []string {
+	var b strings.Builder
 
 	wrapField(&b, "ID", model.ID, valWidth)
 	wrapField(&b, "Provider", extractProvider(model.ID), valWidth)
@@ -698,17 +906,7 @@ func (m *Model) detailView() string {
 		wrapField(&b, "Output Modalities", strings.Join(mods, ", "), valWidth)
 	}
 
-	b.WriteString(helpStyle.Render("\n space allow  a agents  p routing  s save  esc/q back"))
-	if m.status != "" {
-		fmt.Fprint(&b, "\n")
-		if m.statusIsError {
-			b.WriteString(errorStyle.Render(" " + m.status))
-		} else {
-			b.WriteString(keyStyle.Render(" " + m.status))
-		}
-	}
-
-	return detailStyle.Render(b.String())
+	return strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n")
 }
 
 // checkbox renders a "[x] Label  [key]" toggle for the filter row.

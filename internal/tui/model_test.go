@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/OpenRouterTeam/go-sdk/models/components"
@@ -136,5 +137,80 @@ func TestManualRoutingProvider(t *testing.T) {
 
 	if got := cfg.Routing(id).Order; len(got) != 1 || got[0] != "deepseek" {
 		t.Fatalf("unexpected order: %v", got)
+	}
+}
+
+func TestMarqueeScrollsOnlyTheSelectedOverlongName(t *testing.T) {
+	m, _ := testModel(t)
+	longID := strings.Repeat("a", 80)
+	m.models = []components.Model{
+		{ID: longID, Name: "Long"},
+		{ID: "short", Name: "Short"},
+	}
+	m.modelColWidth = 40
+	m.marqueeRow = -1
+	m.marqueeActive = false
+	m.applyFilters()
+	m.table.SetCursor(0)
+
+	if !m.marqueeNeeded() {
+		t.Fatal("the long selected name should need scrolling")
+	}
+
+	m.advanceMarquee()
+	got := m.table.Rows()[0][0]
+	if got == longID {
+		t.Fatal("the selected name was not scrolled")
+	}
+	if len([]rune(got)) != m.modelColWidth {
+		t.Fatalf("marquee window has width %d, want %d", len([]rune(got)), m.modelColWidth)
+	}
+
+	m.table.SetCursor(1)
+	m.resetMarqueeForSelection()
+	if got := m.table.Rows()[0][0]; got != longID {
+		t.Fatalf("deselected name should be restored, got %q", got)
+	}
+	if m.marqueeNeeded() {
+		t.Fatal("the short selected name should not need scrolling")
+	}
+}
+
+func TestDetailViewScrolls(t *testing.T) {
+	m, _ := testModel(t)
+	description := strings.Repeat("a long description of this model ", 40)
+	m.filtered[0].Description = &description
+	m.selectedIdx = 0
+	m.view = viewDetail
+	m.height = 20
+	m.width = 100
+
+	maxOffset := m.detailMaxOffset()
+	if maxOffset == 0 {
+		t.Fatal("the detail body should be taller than the viewport")
+	}
+
+	m.scrollDetail(3)
+	if m.detailOffset != 3 {
+		t.Fatalf("expected offset 3, got %d", m.detailOffset)
+	}
+
+	m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	if m.detailOffset != maxOffset {
+		t.Fatalf("end should jump to %d, got %d", maxOffset, m.detailOffset)
+	}
+
+	m.Update(tea.KeyMsg{Type: tea.KeyHome})
+	if m.detailOffset != 0 {
+		t.Fatalf("home should return to the top, got %d", m.detailOffset)
+	}
+
+	m.scrollDetail(-10)
+	if m.detailOffset != 0 {
+		t.Fatalf("scrolling above the top should clamp, got %d", m.detailOffset)
+	}
+
+	if view := m.View(); view == "" {
+		t.Fatal("detail view rendered empty output")
 	}
 }
