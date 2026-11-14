@@ -107,7 +107,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          name="orb_${VERSION}_linux_${ARCH}"
+          name="orb_v${VERSION}_linux_${ARCH}"
           mkdir -p "dist/$name"
           install -m 0755 build/orb "dist/$name/orb"
           install -m 0644 README.md LICENSE "dist/$name/"
@@ -151,7 +151,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          args=(--title "orb $VERSION" --generate-notes --verify-tag)
+          args=(--title "orb v$VERSION" --generate-notes --verify-tag)
           if [[ "${VERSION%%+*}" == *-* ]]; then
             args+=(--prerelease)
           fi
