@@ -4,6 +4,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 
@@ -14,9 +15,19 @@ import (
 	"orb/internal/tui"
 )
 
+// version is set at build time with -ldflags "-X main.version=<version>". It
+// stays "dev" for plain `go build` and `go run`.
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", "", "OpenCode config file to edit (default: global opencode.json)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("orb", version)
+		return
+	}
 
 	path, err := opencode.ResolvePath(*configPath)
 	if err != nil {

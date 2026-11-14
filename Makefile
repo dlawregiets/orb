@@ -10,17 +10,29 @@ ifeq ($(strip $(BINDIR)),)
 BINDIR := $(shell $(GO) env GOPATH)/bin
 endif
 
-LDFLAGS := -s -w
+# Release builds set VERSION in the environment; local builds derive it from the
+# nearest git tag, stripped of its leading "v".
+VERSION ?= $(patsubst v%,%,$(shell git describe --tags --always --dirty 2>/dev/null || echo dev))
+ifeq ($(strip $(VERSION)),)
+VERSION := dev
+endif
+
+LDFLAGS := -s -w -X main.version=$(VERSION)
+
+# Releases are distributed as bare tarballs, so the binary must not depend on the
+# host's libc. Nothing here uses cgo; override with `make build CGO_ENABLED=1` if
+# that ever changes.
+CGO_ENABLED := 0
 
 .DEFAULT_GOAL := build
 
 .PHONY: build install test lint fmt vet tidy clean run
 
 build:
-	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) $(CMD)
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) $(CMD)
 
 install:
-	GOBIN=$(BINDIR) $(GO) install -trimpath -ldflags "$(LDFLAGS)" $(CMD)
+	GOBIN=$(BINDIR) CGO_ENABLED=$(CGO_ENABLED) $(GO) install -trimpath -ldflags "$(LDFLAGS)" $(CMD)
 
 test:
 	$(GO) test ./...

@@ -19,6 +19,7 @@ usual workflow.
 ```sh
 orb
 orb --config ./opencode.json
+orb --version
 ```
 
 By default orb edits the global OpenCode configuration:
