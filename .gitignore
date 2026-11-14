@@ -23,6 +23,9 @@ coverage.*
 go.work
 go.work.sum
 
+# Local tool configuration
+.kandor.toml
+
 # Editor and IDE
 .idea/
 .vscode/
